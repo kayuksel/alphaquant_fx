@@ -17,132 +17,86 @@ import torch
 import torch.nn.functional as F
 
 def technical_indicator(ohlcv: torch.Tensor) -> torch.Tensor:
-    eps = 1e-06  # small epsilon to avoid division by zero/log of zero
-
-    # Return empty tensor if no assets
+    eps = 1e-06
     if ohlcv.size(0) == 0:
         return torch.zeros(0, device=ohlcv.device)
-
-    # Unpack dimensions: number of assets, time steps, features
     (n_assets, T, feat) = ohlcv.shape
-    close = ohlcv[..., 3]  # extract close prices
-
-    # Compute log returns
+    close = ohlcv[..., 3]
     log_close = torch.log(close + eps)
     returns = log_close - torch.cat([log_close[:, :1], log_close[:, :-1]], dim=1)
-
-    # Ensure at least a minimum history length
     min_req = 15
     if T < min_req:
         pad_amt = min_req - T
         returns = F.pad(returns, (pad_amt, 0), mode='replicate')
         T = returns.size(1)
-
-    # Compute recent volatility over base window up to 20 periods
     base_win = T if T < 20 else 20
     recent_vol = returns[:, -base_win:].std(dim=1)
     vol_med = torch.median(recent_vol)
     vol_std = recent_vol.std() + eps
-
-    # Regime flag: 1 for high volatility, 0 for low
     regime = (recent_vol > vol_med).float()
-
-    # Adaptive decay parameter for exponential weights
-    d_param = torch.clamp(
-        0.5 + 0.1 * ((recent_vol - vol_med) / vol_std) + regime * 0.1,
-        0.2, 0.9
-    )
-
-    # Short-term acceleration metric
+    d_param = torch.clamp(0.5 + 0.1 * ((recent_vol - vol_med) / vol_std) + regime * 0.1, 0.2, 0.9)
     accel = torch.zeros(n_assets, device=ohlcv.device, dtype=returns.dtype)
     if T >= 3:
         accel = 0.5 * (returns[:, -1] - returns[:, -2]) + 0.5 * (returns[:, -2] - returns[:, -3])
-
-    # Scaling factor to normalize amplitude by volatility
     vol_factor = torch.clamp(vol_med / (recent_vol + eps), 0.7, 1.3)
-
-    # Define range of lookback windows for momentum
     min_win = 10
     max_win = min(60, T)
     wins = torch.arange(min_win, max_win + 1, device=ohlcv.device)
-
-    # Pad returns if history shorter than max_win
     missing = max_win - T
     if missing > 0:
         returns_pad = F.pad(returns, (missing, 0), mode='replicate')
     else:
         returns_pad = returns
-
-    sig_list = []  # store signals per window
-    wt_list = []   # store weights per window
-
-    # Loop through each window length
+    sig_list = []
+    wt_list = []
     for w in wins.tolist():
-        # Unfold returns into rolling windows: shape (n_assets, num_steps, w)
         unr = returns_pad.unfold(dimension=1, size=w, step=1)
-        last_unr = unr[:, -1, :]  # most recent window
-
-        # Linear timeline for weighting
+        last_unr = unr[:, -1, :]
         t_lin = torch.linspace(0, 1, steps=w, device=ohlcv.device, dtype=returns.dtype)
         weights = torch.softmax(-d_param.unsqueeze(1) * (1 - t_lin), dim=-1)
-
-        # Weighted momentum
         moment = (last_unr * weights).sum(dim=1) * vol_factor
-
-        # Tail risk: 5% Conditional Value at Risk
         q = torch.quantile(last_unr, 0.05, dim=1, keepdim=True)
         neg_mask = last_unr < q
         cvar = (last_unr * neg_mask.float()).sum(dim=1) / (neg_mask.sum(dim=1).float() + eps)
         tail_risk = torch.sigmoid(-cvar)
-
-        # Combine momentum and tail risk into signal
-        sig = torch.exp(-(moment * vol_factor) ** 2) * tail_risk
+        mean_last = last_unr.mean(dim=1, keepdim=True)
+        std_last = last_unr.std(dim=1, keepdim=True) + eps
+        skew = ((last_unr - mean_last) ** 3).mean(dim=1) / (std_last.squeeze(1) ** 3 + eps)
+        kurt = ((last_unr - mean_last) ** 4).mean(dim=1) / (std_last.squeeze(1) ** 4 + eps) - 3
+        alpha = torch.sigmoid((recent_vol - vol_med) / (vol_std + eps))
+        beta = 1 - alpha
+        comb = alpha * moment + beta * accel + 0.1 * torch.tanh(skew) - 0.1 * torch.tanh(kurt)
+        scale = F.softplus((recent_vol - vol_med) * vol_factor)
+        sig = torch.exp(-(comb * scale) ** 2) * tail_risk
         sig_list.append(sig)
-
-        # Weight inversely proportional to window return variance
         win_std = last_unr.std(dim=1)
-        wt_list.append(1.0 / (win_std ** 2 + eps))
-
-    # Stack signals and weights across windows
+        wt = 1.0 / (win_std ** 2 + eps)
+        wt_list.append(wt)
     S = torch.stack(sig_list, dim=0)
     W = torch.stack(wt_list, dim=0)
-
-    # Dynamic weighting across windows (softmax normalization)
     dyn_w = torch.softmax(-W, dim=0)
     multi = (S * dyn_w).sum(dim=0)
-
-    # Time index for full series
     t_idx = torch.arange(T, device=ohlcv.device, dtype=returns.dtype)
-
-    # Cross-sectional skew calculation
     overall_mean = returns.mean(dim=1, keepdim=True)
     overall_std = returns.std(dim=1, keepdim=True) + eps
     asset_skew = ((returns - overall_mean) ** 3).mean(dim=1) / (overall_std.squeeze(1) ** 3 + eps)
-
-    # Gaussian bandwidths adapt to skew and volatility
-    bw_fast = (0.5 + T/20.0) * (vol_med/(recent_vol + eps)) * (1 + torch.abs(asset_skew))
+    bw_fast = (0.5 + T / 20.0) * (vol_med / (recent_vol + eps)) * (1 + torch.abs(asset_skew))
     bw_med = bw_fast * 1.5
     bw_slow = bw_fast * 2.0
-
-    # Gaussian kernels for trend filtering
     center = T - 1
     diff = (t_idx - center).unsqueeze(0)
-    gauss = lambda bw: torch.exp(-0.5 * (diff / (bw.unsqueeze(1) + eps)) ** 2)
-    gauss_fast, gauss_med, gauss_slow = gauss(bw_fast), gauss(bw_med), gauss(bw_slow)
-
-    # Normalize and compute EMAs
-    norm = lambda g: g.sum(dim=1, keepdim=True) + eps
-    ema = lambda g: (returns * g).sum(dim=1) / norm(g).squeeze(1)
-    ema_fast, ema_med, ema_slow = ema(gauss_fast), ema(gauss_med), ema(gauss_slow)
-
-    # Trend score from Gaussian EMAs
+    gauss_fast = torch.exp(-0.5 * (diff / (bw_fast.unsqueeze(1) + eps)) ** 2)
+    gauss_med = torch.exp(-0.5 * (diff / (bw_med.unsqueeze(1) + eps)) ** 2)
+    gauss_slow = torch.exp(-0.5 * (diff / (bw_slow.unsqueeze(1) + eps)) ** 2)
+    norm_fast = gauss_fast.sum(dim=1, keepdim=True) + eps
+    norm_med = gauss_med.sum(dim=1, keepdim=True) + eps
+    norm_slow = gauss_slow.sum(dim=1, keepdim=True) + eps
+    ema_fast = (returns * gauss_fast).sum(dim=1) / norm_fast.squeeze(1)
+    ema_med = (returns * gauss_med).sum(dim=1) / norm_med.squeeze(1)
+    ema_slow = (returns * gauss_slow).sum(dim=1) / norm_slow.squeeze(1)
     trend = torch.exp(-(ema_fast - ema_med) ** 2 * 10.0) * torch.exp(-(ema_med - ema_slow) ** 2 * 10.0)
-
-    # Cross-sectional rank based on latest return
     med_ret = torch.median(returns[:, -1])
     cross = torch.sigmoid(-8.0 * (returns[:, -1] - med_ret) / (returns.std(dim=1) + eps))
-
-    # Final aggregation and normalization to [0,1]
     agg = torch.pow(multi * trend * cross + eps, 1.0 / 3.0)
     return torch.sigmoid(10.0 * (agg - 0.5))
 ```
