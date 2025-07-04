@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository implements a novel, adaptive technical indicator discovered through an LLM-driven scientific discovery workflow. The indicator synthesizes multi-horizon momentum, volatility regime detection, tail-risk adjustment, and Gaussian-weighted trend filtering to generate a normalized trading signal for the AUDNZD currency pair on hourly OHLCV data. The parameters of the discovered trading strategy are not hyper-tuned.
+This repository implements a novel, adaptive technical indicator discovered through an LLM-driven scientific discovery workflow. The indicator synthesizes multi-horizon momentum, volatility regime detection, tail-risk adjustment, and Gaussian-weighted trend filtering to generate a normalized trading signal for the AUDNZD currency pair on hourly data. The parameters of the discovered trading strategy are not tuned.
 
 ## Results
 
