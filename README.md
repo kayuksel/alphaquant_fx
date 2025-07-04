@@ -1,4 +1,4 @@
-# LLM-Driven Discovery of Forex Trading Strategies
+# AlphaEvolve for Discovery of Forex Trading Strategies
 
 ## Overview
 
