@@ -29,73 +29,81 @@ def technical_indicator(ohlcv: torch.Tensor) -> torch.Tensor:
         pad_amt = min_req - T
         returns = F.pad(returns, (pad_amt, 0), mode='replicate')
         T = returns.size(1)
-    base_win = T if T < 20 else 20
-    recent_vol = returns[:, -base_win:].std(dim=1)
-    vol_med = torch.median(recent_vol)
-    vol_std = recent_vol.std() + eps
-    regime = (recent_vol > vol_med).float()
-    d_param = torch.clamp(0.5 + 0.1 * ((recent_vol - vol_med) / vol_std) + regime * 0.1, 0.2, 0.9)
-    accel = torch.zeros(n_assets, device=ohlcv.device, dtype=returns.dtype)
-    if T >= 3:
-        accel = 0.5 * (returns[:, -1] - returns[:, -2]) + 0.5 * (returns[:, -2] - returns[:, -3])
-    vol_factor = torch.clamp(vol_med / (recent_vol + eps), 0.7, 1.3)
-    min_win = 10
-    max_win = min(60, T)
-    wins = torch.arange(min_win, max_win + 1, device=ohlcv.device)
-    missing = max_win - T
-    if missing > 0:
-        returns_pad = F.pad(returns, (missing, 0), mode='replicate')
+    med_filter_win = 3 if T >= 3 else T
+    if T >= med_filter_win:
+        unfolds = returns.unfold(1, med_filter_win, 1)
+        filtered = unfolds.median(dim=-1).values
+        pad_left = med_filter_win - 1
+        noise_filtered = F.pad(filtered, (pad_left, 0), mode='replicate')
     else:
-        returns_pad = returns
+        noise_filtered = returns
+    base_win = 20 if T >= 20 else T
+    robust_vol = (returns[:, -base_win:] - returns[:, -base_win:].median(dim=1, keepdim=True)[0]).abs().median(dim=1)[0] / 0.6745 + eps
+    vol_med = robust_vol.median()
+    vol_spread = robust_vol.abs().median() + eps
+    regime = torch.sigmoid((robust_vol - vol_med) / vol_spread)
+    d_param = torch.clamp(0.5 + 0.2 * (robust_vol - vol_med) / vol_spread + regime * 0.1, 0.1, 1.0)
+    if feat >= 5:
+        vol_series = ohlcv[..., 4]
+        if T < 15:
+            pad_amt = 15 - T
+            vol_series = F.pad(vol_series, (pad_amt, 0), mode='replicate')
+        delta_vol = vol_series[:, 1:] - vol_series[:, :-1]
+        gain = torch.clamp(delta_vol, min=0)
+        loss = torch.clamp(-delta_vol, min=0)
+        avg_gain = F.avg_pool1d(gain.unsqueeze(1), kernel_size=14, stride=1).squeeze(1)[:, -1]
+        avg_loss = F.avg_pool1d(loss.unsqueeze(1), kernel_size=14, stride=1).squeeze(1)[:, -1] + eps
+        rsi = 100 - 100 / (1 + avg_gain / avg_loss)
+        rsi_norm = rsi / 100.0
+    else:
+        rsi_norm = 0.5 * torch.ones(n_assets, device=ohlcv.device, dtype=returns.dtype)
+    acc = (noise_filtered[:, -1] - noise_filtered[:, -5]) / 4.0 if T >= 5 else noise_filtered[:, -1] - noise_filtered[:, -2]
+    min_win = 10
+    max_win = 60 if T >= 60 else T
+    wins = torch.arange(min_win, max_win + 1, device=returns.device)
+    missing = max_win - T
+    returns_pad = F.pad(returns, (missing, 0), mode='replicate') if missing > 0 else returns
     sig_list = []
     wt_list = []
     for w in wins.tolist():
-        unr = returns_pad.unfold(dimension=1, size=w, step=1)
+        unr = returns_pad.unfold(1, w, 1)
         last_unr = unr[:, -1, :]
-        t_lin = torch.linspace(0, 1, steps=w, device=ohlcv.device, dtype=returns.dtype)
-        weights = torch.softmax(-d_param.unsqueeze(1) * (1 - t_lin), dim=-1)
-        moment = (last_unr * weights).sum(dim=1) * vol_factor
+        t_lin = torch.arange(w, device=returns.device, dtype=returns.dtype)
+        decay = torch.exp(-d_param.unsqueeze(1) * (w - 1 - t_lin))
+        time_weights = decay / (decay.sum(dim=1, keepdim=True) + eps)
+        moment = (last_unr * time_weights).sum(dim=1)
+        window_mad = (last_unr - last_unr.median(dim=1, keepdim=True)[0]).abs().median(dim=1)[0] / 0.6745 + eps
+        m = last_unr.median(dim=1, keepdim=True)[0]
+        robust_skew = ((last_unr - m) ** 3).median(dim=1)[0] / (window_mad ** 3 + eps)
+        robust_kurt = ((last_unr - m) ** 4).median(dim=1)[0] / (window_mad ** 4 + eps) - 3
         q = torch.quantile(last_unr, 0.05, dim=1, keepdim=True)
-        neg_mask = last_unr < q
-        cvar = (last_unr * neg_mask.float()).sum(dim=1) / (neg_mask.sum(dim=1).float() + eps)
-        tail_risk = torch.sigmoid(-cvar)
-        mean_last = last_unr.mean(dim=1, keepdim=True)
-        std_last = last_unr.std(dim=1, keepdim=True) + eps
-        skew = ((last_unr - mean_last) ** 3).mean(dim=1) / (std_last.squeeze(1) ** 3 + eps)
-        kurt = ((last_unr - mean_last) ** 4).mean(dim=1) / (std_last.squeeze(1) ** 4 + eps) - 3
-        alpha = torch.sigmoid((recent_vol - vol_med) / (vol_std + eps))
-        beta = 1 - alpha
-        comb = alpha * moment + beta * accel + 0.1 * torch.tanh(skew) - 0.1 * torch.tanh(kurt)
-        scale = F.softplus((recent_vol - vol_med) * vol_factor)
+        es = torch.where(last_unr < q, last_unr, torch.tensor(float('nan'), device=returns.device))
+        es_mean = torch.nanmean(es, dim=1)
+        tail_risk = torch.sigmoid(-(es_mean - q.squeeze(1)))
+        comb = regime * moment + (1 - regime) * acc + 0.1 * torch.tanh(robust_skew) - 0.1 * torch.tanh(robust_kurt) + 0.1 * rsi_norm
+        vol_factor = 0.7 + 0.6 * torch.sigmoid(vol_med / (robust_vol + eps))
+        scale = F.softplus((robust_vol - vol_med) * vol_factor)
         sig = torch.exp(-(comb * scale) ** 2) * tail_risk
         sig_list.append(sig)
-        win_std = last_unr.std(dim=1)
-        wt = 1.0 / (win_std ** 2 + eps)
+        wt = 1.0 / (window_mad ** 2 + eps)
         wt_list.append(wt)
     S = torch.stack(sig_list, dim=0)
     W = torch.stack(wt_list, dim=0)
     dyn_w = torch.softmax(-W, dim=0)
     multi = (S * dyn_w).sum(dim=0)
-    t_idx = torch.arange(T, device=ohlcv.device, dtype=returns.dtype)
-    overall_mean = returns.mean(dim=1, keepdim=True)
-    overall_std = returns.std(dim=1, keepdim=True) + eps
-    asset_skew = ((returns - overall_mean) ** 3).mean(dim=1) / (overall_std.squeeze(1) ** 3 + eps)
-    bw_fast = (0.5 + T / 20.0) * (vol_med / (recent_vol + eps)) * (1 + torch.abs(asset_skew))
-    bw_med = bw_fast * 1.5
-    bw_slow = bw_fast * 2.0
+    overall_median = returns.median(dim=1, keepdim=True)[0]
+    overall_mad = (returns - overall_median).abs().median(dim=1, keepdim=True)[0] / 0.6745 + eps
+    asset_skew = ((returns - overall_median) ** 3).median(dim=1)[0] / (overall_mad.squeeze(1) ** 3 + eps)
+    bw = (0.5 + T / 20.0) * (vol_med / (robust_vol + eps)) * (1 + torch.abs(asset_skew))
+    t_idx = torch.arange(T, device=returns.device, dtype=returns.dtype)
     center = T - 1
     diff = (t_idx - center).unsqueeze(0)
-    gauss_fast = torch.exp(-0.5 * (diff / (bw_fast.unsqueeze(1) + eps)) ** 2)
-    gauss_med = torch.exp(-0.5 * (diff / (bw_med.unsqueeze(1) + eps)) ** 2)
-    gauss_slow = torch.exp(-0.5 * (diff / (bw_slow.unsqueeze(1) + eps)) ** 2)
-    norm_fast = gauss_fast.sum(dim=1, keepdim=True) + eps
-    norm_med = gauss_med.sum(dim=1, keepdim=True) + eps
-    norm_slow = gauss_slow.sum(dim=1, keepdim=True) + eps
-    ema_fast = (returns * gauss_fast).sum(dim=1) / norm_fast.squeeze(1)
-    ema_med = (returns * gauss_med).sum(dim=1) / norm_med.squeeze(1)
-    ema_slow = (returns * gauss_slow).sum(dim=1) / norm_slow.squeeze(1)
-    trend = torch.exp(-(ema_fast - ema_med) ** 2 * 10.0) * torch.exp(-(ema_med - ema_slow) ** 2 * 10.0)
-    med_ret = torch.median(returns[:, -1])
+    bw_exp = bw.unsqueeze(1) + eps
+    ep_kernel = torch.clamp(1 - (diff / bw_exp) ** 2, min=0)
+    norm_kernel = ep_kernel.sum(dim=1) + eps
+    ema = (returns * ep_kernel).sum(dim=1) / norm_kernel
+    trend = torch.exp(-(ema - returns[:, -1]) ** 2 * 10.0)
+    med_ret = returns[:, -1].median()
     cross = torch.sigmoid(-8.0 * (returns[:, -1] - med_ret) / (returns.std(dim=1) + eps))
     agg = torch.pow(multi * trend * cross + eps, 1.0 / 3.0)
     return torch.sigmoid(10.0 * (agg - 0.5))
