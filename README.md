@@ -1,4 +1,4 @@
-# LLM-Driven Discovery of Technical Strategies for Forex
+# LLM-Driven Discovery of Forex Trading Strategies
 
 ## Overview
 
