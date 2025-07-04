@@ -22,105 +22,134 @@ import torch
 import torch.nn.functional as F
 
 def technical_indicator(ohlcv: torch.Tensor) -> torch.Tensor:
-    import torch, torch.nn.functional as F
-    eps = 1e-06
-    # Handle empty input
+    eps = 1e-06  # small epsilon to avoid division by zero/log of zero
+
+    # Return empty tensor if no assets
     if ohlcv.size(0) == 0:
         return torch.zeros(0, device=ohlcv.device)
 
-    n_assets, T, feat = ohlcv.shape
-    close = ohlcv[..., 3]
+    # Unpack dimensions: number of assets, time steps, features
+    (n_assets, T, feat) = ohlcv.shape
+    close = ohlcv[..., 3]  # extract close prices
+
+    # Compute log returns
     log_close = torch.log(close + eps)
     returns = log_close - torch.cat([log_close[:, :1], log_close[:, :-1]], dim=1)
 
-    # Ensure minimum history
+    # Ensure at least a minimum history length
     min_req = 15
     if T < min_req:
-        returns = F.pad(returns, (min_req - T, 0), mode='replicate')
-        T = min_req
+        pad_amt = min_req - T
+        returns = F.pad(returns, (pad_amt, 0), mode='replicate')
+        T = returns.size(1)
 
-    # Volatility regime detection
-    base_win = min(T, 20)
+    # Compute recent volatility over base window up to 20 periods
+    base_win = T if T < 20 else 20
     recent_vol = returns[:, -base_win:].std(dim=1)
     vol_med = torch.median(recent_vol)
     vol_std = recent_vol.std() + eps
-    regime_flag = (recent_vol > vol_med).float()
 
-    # Adaptive decay parameter d_param controls memory of returns
+    # Regime flag: 1 for high volatility, 0 for low
+    regime = (recent_vol > vol_med).float()
+
+    # Adaptive decay parameter for exponential weights
     d_param = torch.clamp(
-        0.5 + 0.1 * ((recent_vol - vol_med) / vol_std) + regime_flag * 0.1,
+        0.5 + 0.1 * ((recent_vol - vol_med) / vol_std) + regime * 0.1,
         0.2, 0.9
     )
 
-    # Short-term acceleration approximation
-    accel = torch.zeros(n_assets, device=ohlcv.device)
+    # Short-term acceleration metric
+    accel = torch.zeros(n_assets, device=ohlcv.device, dtype=returns.dtype)
     if T >= 3:
         accel = 0.5 * (returns[:, -1] - returns[:, -2]) + 0.5 * (returns[:, -2] - returns[:, -3])
 
-    # Volatility scaling factor to normalize signal amplitude
+    # Scaling factor to normalize amplitude by volatility
     vol_factor = torch.clamp(vol_med / (recent_vol + eps), 0.7, 1.3)
 
-    # Multi-window momentum + tail-risk adjustments
-    min_win, max_win = 10, min(60, T)
-    wins = list(range(min_win, max_win + 1))
-    sig_list, wt_list = [], []
+    # Define range of lookback windows for momentum
+    min_win = 10
+    max_win = min(60, T)
+    wins = torch.arange(min_win, max_win + 1, device=ohlcv.device)
 
-    # Compute for each window
-    for w in wins:
-        # Prepare rolling returns tensor of shape (n_assets, w, steps)
-        windowed = returns.unfold(1, w, 1)  # shape: (n_assets, steps, w)
-        last_window = windowed[:, -1, :]
+    # Pad returns if history shorter than max_win
+    missing = max_win - T
+    if missing > 0:
+        returns_pad = F.pad(returns, (missing, 0), mode='replicate')
+    else:
+        returns_pad = returns
 
-        # Exponential decay weights emphasizing recent returns
-        t_lin = torch.linspace(0, 1, w, device=returns.device)
+    sig_list = []  # store signals per window
+    wt_list = []   # store weights per window
+
+    # Loop through each window length
+    for w in wins.tolist():
+        # Unfold returns into rolling windows: shape (n_assets, num_steps, w)
+        unr = returns_pad.unfold(dimension=1, size=w, step=1)
+        last_unr = unr[:, -1, :]  # most recent window
+
+        # Linear timeline for weighting
+        t_lin = torch.linspace(0, 1, steps=w, device=ohlcv.device, dtype=returns.dtype)
         weights = torch.softmax(-d_param.unsqueeze(1) * (1 - t_lin), dim=-1)
-        momentum = (last_window * weights).sum(dim=1) * vol_factor
 
-        # Tail risk via 5% CVaR
-        q = torch.quantile(last_window, 0.05, dim=1, keepdim=True)
-        downside = last_window[last_window < q]
-        cvar = (downside.sum(dim=1) / (downside.size(1) + eps)).squeeze(1)
+        # Weighted momentum
+        moment = (last_unr * weights).sum(dim=1) * vol_factor
+
+        # Tail risk: 5% Conditional Value at Risk
+        q = torch.quantile(last_unr, 0.05, dim=1, keepdim=True)
+        neg_mask = last_unr < q
+        cvar = (last_unr * neg_mask.float()).sum(dim=1) / (neg_mask.sum(dim=1).float() + eps)
         tail_risk = torch.sigmoid(-cvar)
 
-        # Combine momentum and tail risk
-        signal_w = torch.exp(-(momentum * vol_factor) ** 2) * tail_risk
-        sig_list.append(signal_w)
+        # Combine momentum and tail risk into signal
+        sig = torch.exp(-(moment * vol_factor) ** 2) * tail_risk
+        sig_list.append(sig)
 
-        # Weight inversely to window standard deviation
-        wt_list.append(1.0 / (last_window.std(dim=1) ** 2 + eps))
+        # Weight inversely proportional to window return variance
+        win_std = last_unr.std(dim=1)
+        wt_list.append(1.0 / (win_std ** 2 + eps))
 
-    # Aggregate multi-window signals
-    S = torch.stack(sig_list)            # (num_wins, n_assets)
-    W = torch.stack(wt_list)            # (num_wins, n_assets)
-    win_weights = torch.softmax(-W, dim=0)
-    multi_signal = (S * win_weights).sum(dim=0)
+    # Stack signals and weights across windows
+    S = torch.stack(sig_list, dim=0)
+    W = torch.stack(wt_list, dim=0)
 
-    # Gaussian-weighted trend filters across full history
-    returns_mean = returns.mean(dim=1)
-    returns_std = returns.std(dim=1) + eps
-    skew = ((returns - returns_mean.unsqueeze(1)) ** 3).mean(dim=1) / (returns_std ** 3)
+    # Dynamic weighting across windows (softmax normalization)
+    dyn_w = torch.softmax(-W, dim=0)
+    multi = (S * dyn_w).sum(dim=0)
 
-    # Bandwidths adapt to skew and volatility
-    bw_fast = (0.5 + T/20)*(vol_med/(recent_vol+eps))*(1 + skew.abs())
-    bw_med, bw_slow = bw_fast*1.5, bw_fast*2.0
+    # Time index for full series
+    t_idx = torch.arange(T, device=ohlcv.device, dtype=returns.dtype)
 
-    t_idx = torch.arange(T, device=returns.device)
-    gauss = lambda bw: torch.exp(-0.5*((t_idx - (T-1))/(bw.unsqueeze(1)+eps))**2)
-    g_fast, g_med, g_slow = gauss(bw_fast), gauss(bw_med), gauss(bw_slow)
-    norm = lambda g: g.sum(dim=1, keepdim=True)+eps
-    ema = lambda g: (returns * g).sum(dim=1)/norm(g).squeeze(1)
+    # Cross-sectional skew calculation
+    overall_mean = returns.mean(dim=1, keepdim=True)
+    overall_std = returns.std(dim=1, keepdim=True) + eps
+    asset_skew = ((returns - overall_mean) ** 3).mean(dim=1) / (overall_std.squeeze(1) ** 3 + eps)
 
-    trend_fast, trend_med, trend_slow = ema(g_fast), ema(g_med), ema(g_slow)
-    trend_score = torch.exp(-10*(trend_fast - trend_med)**2) * torch.exp(-10*(trend_med - trend_slow)**2)
+    # Gaussian bandwidths adapt to skew and volatility
+    bw_fast = (0.5 + T/20.0) * (vol_med/(recent_vol + eps)) * (1 + torch.abs(asset_skew))
+    bw_med = bw_fast * 1.5
+    bw_slow = bw_fast * 2.0
 
-    # Cross-sectional rank signal based on last returns
-    median_last = returns[:, -1].median()
-    cross_rank = torch.sigmoid(-8*(returns[:, -1] - median_last)/(returns_std+eps))
+    # Gaussian kernels for trend filtering
+    center = T - 1
+    diff = (t_idx - center).unsqueeze(0)
+    gauss = lambda bw: torch.exp(-0.5 * (diff / (bw.unsqueeze(1) + eps)) ** 2)
+    gauss_fast, gauss_med, gauss_slow = gauss(bw_fast), gauss(bw_med), gauss(bw_slow)
 
-    # Final signal aggregation and normalization
-    agg_raw = multi_signal * trend_score * cross_rank + eps
-    final = torch.sigmoid(10*(agg_raw.pow(1/3) - 0.5))
-    return final
+    # Normalize and compute EMAs
+    norm = lambda g: g.sum(dim=1, keepdim=True) + eps
+    ema = lambda g: (returns * g).sum(dim=1) / norm(g).squeeze(1)
+    ema_fast, ema_med, ema_slow = ema(gauss_fast), ema(gauss_med), ema(gauss_slow)
+
+    # Trend score from Gaussian EMAs
+    trend = torch.exp(-(ema_fast - ema_med) ** 2 * 10.0) * torch.exp(-(ema_med - ema_slow) ** 2 * 10.0)
+
+    # Cross-sectional rank based on latest return
+    med_ret = torch.median(returns[:, -1])
+    cross = torch.sigmoid(-8.0 * (returns[:, -1] - med_ret) / (returns.std(dim=1) + eps))
+
+    # Final aggregation and normalization to [0,1]
+    agg = torch.pow(multi * trend * cross + eps, 1.0 / 3.0)
+    return torch.sigmoid(10.0 * (agg - 0.5))
 ```
 
 ## Strategy Description
