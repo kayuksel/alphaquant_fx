@@ -64,36 +64,31 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
 
 1. **Volatility Regime Detection**
 
-   - Measures recent volatility over a rolling window (up to 20 periods) and benchmarks against the cross-sectional median.
-   - Classifies each asset into high/low volatility regimes to adapt weighting and memory parameters.
+   - Measures each asset’s volatility over the most recent 20 periods (standard deviation of log-returns) and benchmarks it against the cross-sectional median volatility across all assets.  
+   - Defines an `adapt` factor in [0.8, 1.2] that down-weights signals when volatility is unusually high and up-weights them when volatility is unusually low.
 
 2. **Adaptive Decay Parameter**
 
-   - Calculates `d_param` by combining standardized volatility deviation and regime flag.
-   - Controls the exponential decay rates used when weighing past returns, emphasizing recent observations under high-volatility regimes.
+   - Uses the `adapt` factor to set the exponential decay rates for weighing past returns: higher `adapt` → faster decay (focus on the very recent), lower `adapt` → slower decay (longer memory).  
+   - Ensures the strategy automatically zooms in or out on past data depending on current volatility regimes.
 
 3. **Multi-Window Momentum with Tail Risk**
 
-   - Evaluates momentum across windows from 10 to 60 hours using exponential decay weights to focus on more recent returns.
-   - Computes Conditional Value at Risk (5% CVaR) for each window to quantify downside risk.
-   - Blends momentum and tail risk via an exponential penalty on extreme moves, then aggregates across windows using inverse-variance weighting.
+   - For windows of 10, 30, and 60 periods, applies Gaussian-shaped weights (peaking on the most recent day) to compute a decayed momentum (“moment”) over each horizon.  
+   - Calculates 5% Conditional Value at Risk (CVaR) by averaging the worst 5% of returns in each window and adjusts for skewness to quantify downside risk.  
+   - Blends each window’s momentum and tail-risk via an `exp(-x^2)` penalty on extreme moves, then aggregates the three signals into one `multi_ens` score using inverse-variance weighting.
 
 4. **Gaussian-Weighted Trend Filters**
 
-   - Applies three Gaussian kernels (fast, medium, slow) over the full return history to isolate trend bifurcations.
-   - Bandwidths adapt dynamically based on volatility regime and return skewness, capturing asymmetric market conditions.
+   - Applies two complementary exponential-decay filters (one adaptive to volatility via `adapt`, one fixed) across the full return history to measure trend consistency.  
+   - Penalizes the signal if today’s return diverges sharply from the time-weighted historical average, enforcing smooth, coherent trends.
 
 5. **Cross-Sectional Skew Adjustment**
 
-   - Generates a ranking signal by comparing the latest return to the median of all assets (here only AUDNZD).
-   - Scales signal by asset skewness to account for asymmetric return distributions.
+   - Within each sub-model, computes the skewness of the past-`w` returns and uses a `tanh(skew)` term to tilt signals in the direction of pronounced asymmetry.  
+   - At the final stage, measures how far today’s return deviates from its own historical median (in units of its own volatility) and runs that through a sigmoid to dampen outsized moves.
 
 6. **Aggregation & Normalization**
 
-   - Multiplies the multi-window momentum, trend-filter score, and cross-sectional rank signals.
-   - Applies a cubic root to control dispersion, then transforms via a sigmoid with a steepness factor of 10 to map into [0,1].
-
-7. **Application to AUDNZD Hourly Data**
-
-   - Hourly backtest shows stable equity growth with controlled drawdowns.
-   - Captures both mean-reversion in low-volatility periods and trend-following in breakout regimes.
+   - Multiplies together the ensemble momentum signal (`multi_ens`), the trend-consistency filter, and the historical-median return filter, then adds a tiny epsilon to avoid zeros.  
+   - Applies a cube-root (power 1/3) to soften extremes, and finally tilts the result by `(1 + 0.1 × short-term momentum)` to re-emphasize fresh price action.
