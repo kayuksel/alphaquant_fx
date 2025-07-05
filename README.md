@@ -76,7 +76,7 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
 
    - For windows of 10, 30, and 60 periods, applies Gaussian-shaped weights (peaking on the most recent day) to compute a decayed momentum (“moment”) over each horizon.  
    - Calculates 5% Conditional Value at Risk (CVaR) by averaging the worst 5% of returns in each window and adjusts for skewness to quantify downside risk.  
-   - Blends each window’s momentum and tail-risk via an `exp(-x^2)` penalty on extreme moves, then aggregates the three signals into one `multi_ens` score using inverse-variance weighting.
+   - Blends each window’s momentum and tail-risk via a penalty on extreme moves, then aggregates the three signals into one `multi_ens` score using inverse-variance weighting.
 
 4. **Gaussian-Weighted Trend Filters**
 
