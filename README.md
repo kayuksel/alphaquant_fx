@@ -22,8 +22,7 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
     vol_recent = pad(rts, base_win)[:, -base_win:].std(dim=1)
     adapt = (1 + 0.2 * ((vol_recent - vol_recent.median()) / (vol_recent.median() + eps))).clamp(0.8, 1.2)
     multi_fd = torch.stack([rts[:, -1] - pad(rts, w)[:, -w] for w in [5, 10, 20]], dim=0).mean(dim=0).tanh()
-    roll = pad(rts, base_win).unfold(1, base_win, 1)
-    entropy = (1 + roll.std(dim=2)).log().mean(dim=1).sigmoid()
+    entropy = (1 + pad(rts, base_win).unfold(1, base_win, 1).std(dim=2)).log().mean(dim=1).sigmoid()
     vs = pad(ohlcv[..., 4], 60)
     dv = vs[:, 1:] - vs[:, :-1]
     avg_gain = dv.clamp_min(0).unfold(1, 14, 1).mean(dim=2)[:, -1]
@@ -32,12 +31,11 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
     rsi_norm = ((100 - 100 / (1 + avg_gain / avg_loss)) / 100) ** vol_exp
     vol_adj = (vs[:, -1] / (vs.mean(dim=1) + eps)).sigmoid() * pad(vs, 14).unfold(1, 14, 1).std(dim=2)[:, -1].sigmoid()
     ens_wins = torch.tensor([10, 30, 60], device=rts.device, dtype=torch.long)
-    rp2 = pad(rts, int(ens_wins.max().item()))
+    rp = pad(rts, int(ens_wins.max().item()))
     blend = lambda x: 0.3 * x.quantile(0.25, dim=1) + 0.4 * x.quantile(0.5, dim=1) + 0.3 * x.quantile(0.75, dim=1)
     (S_list, W_list) = ([], [])
     for w in ens_wins.tolist():
-        roll_win = rp2.unfold(1, w, 1)
-        last_roll = roll_win[:, -1, :]
+        last_roll = rp.unfold(1, w, 1)[:, -1, :]
         wk = torch.exp(-0.5 * ((torch.arange(w, device=rts.device, dtype=rts.dtype) - (w - 1)) / (w * 0.5 + eps)) ** 2)
         moment = (last_roll * wk / (wk.sum() + eps)).sum(dim=1)
         m_last = last_roll.mean(dim=1)
@@ -50,16 +48,15 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
         tail = (-(cvar_est - q_val) * (1 + torch.relu(-skew))).sigmoid()
         comb = entropy * moment + (1 - entropy) * blend(last_roll) 
         comb += 0.1 * (skew.tanh() - kurt.tanh() + rsi_norm + multi_fd.tanh())
-        comb = comb / (1 + 0.5 * vol_recent)
-        S_list.append((-(comb * vol_adj) ** 2).exp() * tail * multi_fd.tanh().sigmoid())
+        S_list.append((-(comb * vol_adj / (1 + 0.5 * vol_recent)) ** 2).exp() * tail * multi_fd.tanh().sigmoid())
         W_list.append(moment.sigmoid() / (std_last ** 2 + eps))
     dyn_w = (-torch.stack(W_list, dim=0)).softmax(dim=0)
     multi_ens = (torch.stack(S_list, dim=0) * dyn_w).sum(dim=0)
-    weights = torch.arange(rp2.size(1), device=rts.device, dtype=rts.dtype).unsqueeze(0)
+    weights = torch.arange(rp.size(1), device=rts.device, dtype=rts.dtype).unsqueeze(0)
     wei_num = 0.7 * (-adapt.unsqueeze(1) * weights).exp() + 0.3 * (-0.05 * weights).exp()
     wei = wei_num / (wei_num.sum(dim=1, keepdim=True) + eps)
-    trend = (-10 * ((rp2 * wei).sum(dim=1) - rp2[:, -1]) ** 2).exp() 
-    cross = (-(8 * (rp2[:, -1] - rp2[:, -1].median()) / (rts.std(dim=1) + eps))).sigmoid()
+    trend = (-10 * ((rp * wei).sum(dim=1) - rp2[:, -1]) ** 2).exp() 
+    cross = (-(8 * (rp[:, -1] - rp2[:, -1].median()) / (rts.std(dim=1) + eps))).sigmoid()
     return (multi_ens * trend * cross + eps).pow(1 / 3) * (1 + 0.1 * multi_fd)
 ```
 
