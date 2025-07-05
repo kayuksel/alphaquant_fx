@@ -55,8 +55,8 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
     weights = torch.arange(rp.size(1), device=rts.device, dtype=rts.dtype).unsqueeze(0)
     wei_num = 0.7 * (-adapt.unsqueeze(1) * weights).exp() + 0.3 * (-0.05 * weights).exp()
     wei = wei_num / (wei_num.sum(dim=1, keepdim=True) + eps)
-    trend = (-10 * ((rp * wei).sum(dim=1) - rp2[:, -1]) ** 2).exp() 
-    cross = (-(8 * (rp[:, -1] - rp2[:, -1].median()) / (rts.std(dim=1) + eps))).sigmoid()
+    trend = (-10 * ((rp * wei).sum(dim=1) - rp[:, -1]) ** 2).exp() 
+    cross = (-(8 * (rp[:, -1] - rp[:, -1].median()) / (rts.std(dim=1) + eps))).sigmoid()
     return (multi_ens * trend * cross + eps).pow(1 / 3) * (1 + 0.1 * multi_fd)
 ```
 
