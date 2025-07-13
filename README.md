@@ -92,3 +92,13 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
 
    - Multiplies together the ensemble momentum signal (`multi_ens`), the trend-consistency filter, and the historical-median return filter, then adds a tiny epsilon to avoid zeros.  
    - Applies a cube-root (power 1/3) to soften extremes, and finally tilts the result by `(1 + 0.1 × short-term momentum)` to re-emphasize fresh price action.
+
+## References
+
+1. **AlphaQuant**: LLM-Driven Automated Robust Feature Engineering for Quantitative Finance, In Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025), Singapore. Available at SSRN: [https://ssrn.com/abstract=5124841](https://ssrn.com/abstract=5124841).
+
+2. **AlphaPortfolio**: Discovery of Portfolio Optimization and Allocation Methods Using LLMs, In Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025), Singapore. Available at SSRN: [https://ssrn.com/abstract=5118317](https://ssrn.com/abstract=5118317).
+
+3. **AlphaSharpe**: LLM-Driven Discovery of Robust Risk-Adjusted Metrics, Submitted to the European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025), Porto. Preprint, arXiv:2502.00029. Available at SSRN: [https://ssrn.com/abstract=5111141](https://ssrn.com/abstract=5111141). 
+
+4. **AlphaLoss**: LLM-Driven Evolution of Robust, Interpretable, and Multi-Objective Portfolio Optimization Loss Functions,Submitted to the European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025), Porto. Available at SSRN: [https://ssrn.com/abstract=5263279](https://ssrn.com/abstract=5263279).
