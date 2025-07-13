@@ -95,10 +95,14 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
 
 ## References
 
-1. **AlphaQuant**: LLM-Driven Automated Robust Feature Engineering for Quantitative Finance, In Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025), Singapore. Available at SSRN: [https://ssrn.com/abstract=5124841](https://ssrn.com/abstract=5124841).
+1. **AlphaQuant**: LLM-Driven Automated Robust Feature Engineering for Quantitative Finance. In *Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025)*, Singapore. Available at SSRN: [https://ssrn.com/abstract=5124841](https://ssrn.com/abstract=5124841).
 
-2. **AlphaPortfolio**: Discovery of Portfolio Optimization and Allocation Methods Using LLMs, In Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025), Singapore. Available at SSRN: [https://ssrn.com/abstract=5118317](https://ssrn.com/abstract=5118317).
+2. **AlphaPortfolio**: Discovery of Portfolio Optimization and Allocation Methods Using LLMs. In *Proceedings of the Thirteenth International Conference on Learning Representations (ICLR 2025)*, Singapore. Available at SSRN: [https://ssrn.com/abstract=5118317](https://ssrn.com/abstract=5118317).
 
-3. **AlphaSharpe**: LLM-Driven Discovery of Robust Risk-Adjusted Metrics, Submitted to the European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025), Porto. Preprint, arXiv:2502.00029. Available at SSRN: [https://ssrn.com/abstract=5111141](https://ssrn.com/abstract=5111141). 
+3. **AlphaSharpe**: LLM-Driven Discovery of Robust Risk-Adjusted Metrics. Submitted to the *European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025)*, Porto. Preprint, arXiv:2502.00029. Available at SSRN: [https://ssrn.com/abstract=5111141](https://ssrn.com/abstract=5111141).
 
-4. **AlphaLoss**: LLM-Driven Evolution of Robust, Interpretable, and Multi-Objective Portfolio Optimization Loss Functions,Submitted to the European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025), Porto. Available at SSRN: [https://ssrn.com/abstract=5263279](https://ssrn.com/abstract=5263279).
+4. **AlphaLoss**: LLM-Driven Evolution of Robust, Interpretable, and Multi-Objective Portfolio Optimization Loss Functions. Submitted to the *European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML-PKDD 2025)*, Porto. Available at SSRN: [https://ssrn.com/abstract=5263279](https://ssrn.com/abstract=5263279).
+
+5. **AlphaEvolve**: A Learning Framework to Discover Novel Alphas in Quantitative Investment. In *Proceedings of the 2021 International Conference on Management of Data (SIGMOD ’21)*, June 20–25, 2021, Virtual Event, China. ACM, New York, NY, USA, 9 pages. [https://doi.org/10.1145/3448016.3457324](https://doi.org/10.1145/3448016.3457324).
+
+6. **R&D-Agent-Quant**: A Multi-Agent Framework for Data-Centric Factors and Model Joint Optimization. Preprint, arXiv:2505.15155v1. Available at: [https://arxiv.org/abs/2505.15155v1](https://arxiv.org/abs/2505.15155v1).
