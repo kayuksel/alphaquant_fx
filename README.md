@@ -109,4 +109,4 @@ def technical_indicator(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
 
 7. **QuantEvolve**: Automating Quantitative Strategy Discovery through a Multi-Agent Evolutionary Framework. Preprint, arXiv:2510.18569. Available at: [https://arxiv.org/abs/2510.18569](https://arxiv.org/abs/2510.18569).
 
-8. **EvoRisk**: Autonomously Discovered Regime-Adaptive Resilience-Aware Financial Metric.  *Submitted to the Thirteenth International Conference on Learning Representations (ICLR 2026)*. Preprint, Available at SSRN: [https://arxiv.org/abs/2506.13131](https://ssrn.com/abstract=5791002).
+8. **EvoRisk**: Autonomously Discovered Regime-Adaptive Resilience-Aware Financial Metric.  *Submitted to the Thirteenth International Conference on Learning Representations (ICLR 2026)*. Preprint, Available at SSRN: [https://ssrn.com/abstract=5791002](https://ssrn.com/abstract=5791002).
