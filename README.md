@@ -1,4 +1,4 @@
-# AlphaEvolve-like Discovery of HF Trading Strategies
+# AlphaEvolve for Discovery of HF Trading Strategies
 
 ## Overview
 
