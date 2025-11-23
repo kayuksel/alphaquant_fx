@@ -9,64 +9,45 @@ import torch.nn.functional as F
 #  PLACEHOLDER: YOU WILL PASTE YOUR TWO INDICATORS HERE
 # ===============================================================
 
-def technical_indicator_crypto(ohlcv, eps=1e-6):
-    import torch.nn.functional as F
+def technical_indicator_crypto(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
     (n, T, _) = ohlcv.shape
     logc = ohlcv[..., 3].clamp_min(eps).log()
     rts = logc - torch.cat([logc[:, :1], logc[:, :-1]], dim=1)
-
+    win = lambda x, k: x.unfold(1, k, 1) if x.size(1) >= k else F.pad(x, (k - x.size(1), 0)).unfold(1, k, 1)
     w20 = torch.exp(-0.05 * torch.arange(19, -1, -1, device=rts.device))
-    last20 = rts[:, -20:]
-    vol_recent = torch.sqrt((w20 * last20**2).sum(1) / w20.sum())
+    vol_recent = torch.sqrt((w20 * rts[:, -20:] ** 2).sum(1) / w20.sum())
     vr_long = rts.std(1)
     vol_exp = 1 + 0.5 * vol_recent / (vr_long + eps)
-    adapt = (1 + 0.2 * (vol_recent - vr_long) / (vr_long + eps)).clamp(0.8, 1.2)
-
-    def win(x, k): 
-        return x.unfold(1, k, 1) if x.size(1) >= k else F.pad(x, (k-x.size(1),0)).unfold(1,k,1)
-
+    adapt_base = (1 + 0.2 * (vol_recent - vr_long) / (vr_long + eps)).clamp(0.8, 1.2)
     w20_std = win(rts, 20)
-    last_roll = w20_std[:, -1]
     entropy = w20_std.std(2).mean(1).sigmoid()
-
+    regime = (entropy > 0.5).float() * 1.2 + (entropy <= 0.5).float() * 0.6
+    adapt = adapt_base * regime
+    last_roll = w20_std[:, -1]
     trim = torch.sort(last_roll, 1)[0][:, 5:-5]
-    skew = ((trim - trim.mean(1, True))**3).mean(1) / (trim.std(1, False) + eps)**3
-
-    vs = ohlcv[..., 4]
-    dv = vs[:, 1:] - vs[:, :-1]
+    skew = ((trim - trim.mean(1, True)) ** 3).mean(1) / (trim.std(1, False) + eps) ** 3
+    dv = ohlcv[..., 4][:, 1:] - ohlcv[..., 4][:, :-1]
     avg_gain = win(dv.clamp_min(0), 14).mean(2)[:, -1]
     avg_loss = win((-dv).clamp_min(0), 14).mean(2)[:, -1].clamp_min(eps)
-    rsi_norm = ((100 - 100/(1 + avg_gain/avg_loss))/100)**(vol_exp*(1 + 0.4*skew.tanh()))
-
-    vwap3 = (ohlcv[..., 3]*vs).unfold(1,3,1).sum(2) / (vs.unfold(1,3,1).sum(2)+eps)
-    vwap_cross = (rts[:, -1] > vwap3[:, -1]).float()
-
-    wk = torch.exp(-0.5*((torch.arange(20,device=rts.device)-19)/(20*(0.5+entropy[:,None])))**2)
-    moment = (last_roll*wk/wk.sum(1,True)).sum(1)
-
-    blend = (.3*last_roll.quantile(.25,1) + .4*last_roll.quantile(.5,1) + .3*last_roll.quantile(.75,1))
-    multi = entropy*moment + (1-entropy)*blend
-
-    ql = last_roll.quantile(.05,1)
-    qh = last_roll.quantile(.95,1)
-    tail = ((.6*(-ql*(1+F.relu(-skew))).sigmoid() +
-             .4*((ql<-2*vol_recent)&(qh>2*vol_recent)).float())
-            .sigmoid() * (qh-ql).sigmoid())
-
-    micro = win(rts,3).std(2)[:, -1]
-    vol_adj = (vs[:, -1]/(vs.mean(1)+eps)).sigmoid() * win(dv,14).std(2)[:, -1].sigmoid() * (micro*5).sigmoid()
-
-    S = (-(multi*vol_adj/(1+0.5*vol_recent))**2).exp() * tail
-
+    rsi_norm = ((100 - 100 / (1 + avg_gain / avg_loss)) / 100) ** (vol_exp * (1 + 0.4 * skew.tanh()))
+    vwap3 = (ohlcv[..., 3] * ohlcv[..., 4]).unfold(1, 3, 1).sum(2) / (ohlcv[..., 4].unfold(1, 3, 1).sum(2) + eps)
+    vwap_dist = torch.tanh((rts[:, -1] - vwap3[:, -1]) / (vol_recent + eps)).sigmoid()
+    wk = torch.exp(-0.5 * ((torch.arange(20, device=rts.device) - 19) / (20 * (0.5 + entropy[:, None]))) ** 2)
+    moment = (last_roll * wk / wk.sum(1, True)).sum(1)
+    blend = 0.3 * last_roll.quantile(0.25, dim=1) + 0.4 * last_roll.quantile(0.5, dim=1) + 0.3 * last_roll.quantile(0.75, dim=1)
+    multi = entropy * moment + (1 - entropy) * blend
+    ql = last_roll.quantile(0.05, dim=1)
+    qh = last_roll.quantile(0.95, dim=1)
+    tail = (0.6 * (-ql * (1 + F.relu(-skew))).sigmoid() + 0.4 * ((ql < -2 * vol_recent) & (qh > 2 * vol_recent)).float()).sigmoid() * (qh - ql).sigmoid()
+    micro = win(rts, 3).std(2)[:, -1]
+    vol_adj = (ohlcv[..., 4][:, -1] / (ohlcv[..., 4].mean(1) + eps)).sigmoid() * win(dv, 14).std(2)[:, -1].sigmoid() * (micro * 5).sigmoid()
+    S = (-(multi * vol_adj / (1 + 0.5 * vol_recent)) ** 2).exp() * tail
     widx = torch.arange(20, device=rts.device)
-    wei = (.7*(-adapt[:,None]*widx).exp() + .3*(-0.05*widx).exp())
-    wei /= wei.sum(1, True)
-
-    vwap10 = (ohlcv[..., 3]*vs).unfold(1,10,1).sum(2)/(vs.unfold(1,10,1).sum(2)+eps)
-    trend = (-10*((last_roll*wei).sum(1)-last_roll[:, -1])**2).exp() \
-            * vwap_cross.sigmoid() * (1+0.15*((ohlcv[...,3][:,-1]-vwap10[:,-1])/(vwap10[:,-1]+eps)).sign())
-
-    cross = (-(8*last_roll[:, -1]/(rts.std(1)+eps))).sigmoid()
+    wei = 0.7 * (-adapt[:, None] * widx).exp() + 0.3 * (-0.05 * widx).exp()
+    wei = wei / wei.sum(1, True)
+    vwap10 = (ohlcv[..., 3] * ohlcv[..., 4]).unfold(1, 10, 1).sum(2) / (ohlcv[..., 4].unfold(1, 10, 1).sum(2) + eps)
+    trend = (-10 * ((last_roll * wei).sum(1) - last_roll[:, -1]) ** 2).exp() * vwap_dist * (1 + 0.15 * ((ohlcv[..., 3][:, -1] - vwap10[:, -1]) / (vwap10[:, -1] + eps)).sign())
+    cross = (-(8 * last_roll[:, -1] / (rts.std(1) + eps))).sigmoid()
     return S * trend * cross
 
 def technical_indicator_fx(ohlcv: torch.Tensor, eps = 1e-06) -> torch.Tensor:
